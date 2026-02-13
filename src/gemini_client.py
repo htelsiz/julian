@@ -66,11 +66,16 @@ def _get_project_id() -> str:
 
 async def generate_review(diff: str, styleguide: str | None, patterns: str | None) -> str:
     """Generate a Julian-style pattern enforcement review."""
-    persona = styleguide or DEFAULT_PERSONA
-    pattern_ref = patterns or DEFAULT_PATTERNS
+    # Always use Julian's persona — never let repo content replace it
+    repo_patterns = ""
+    if styleguide:
+        repo_patterns += f"\n## Repo Styleguide\n{styleguide}"
+    if patterns:
+        repo_patterns += f"\n## Repo Patterns\n{patterns}"
+    pattern_ref = repo_patterns or DEFAULT_PATTERNS
 
     system_prompt = f"""
-{persona}
+{DEFAULT_PERSONA}
 
 ## Pattern Reference
 {pattern_ref}
