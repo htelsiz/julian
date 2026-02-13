@@ -141,7 +141,7 @@ async def _call_gemini(system_prompt: str, user_prompt: str) -> str:
     }
 
     async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json=json.dumps(payload)) as resp:
+        async with session.post(url, headers=headers, json=payload) as resp:
             if resp.status != 200:
                 text = await resp.text()
                 logger.error("[gemini] API error: %d %s", resp.status, text)
