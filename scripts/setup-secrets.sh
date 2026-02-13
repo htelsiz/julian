@@ -25,7 +25,7 @@ fi
 
 # Generate webhook secret
 echo "Generating webhook secret..."
-openssl rand -hex 32 > "$SECRETS_DIR/webhook-secret"
+tr -dc 'a-f0-9' < /dev/urandom | head -c 64 > "$SECRETS_DIR/webhook-secret"
 
 # Placeholder files (need to be filled in after GitHub App creation)
 echo "REPLACE_WITH_APP_ID" > "$SECRETS_DIR/app-id"
