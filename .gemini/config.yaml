@@ -1,0 +1,4 @@
+codeReview:
+  enabled: true
+  styleguide: styleguide.md
+  patterns: patterns.md
