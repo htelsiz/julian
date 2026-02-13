@@ -1,6 +1,5 @@
 """Gemini API client for Julian pattern enforcement reviews."""
 
-import json
 import logging
 import os
 
