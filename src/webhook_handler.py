@@ -43,6 +43,9 @@ async def _handle_pr_review(data: dict) -> None:
 
     # Parse diff for structured line info
     parsed_diff = parse_diff(diff)
+    if not parsed_diff:
+        logger.info("[review] No reviewable changes in PR #%d (deletions/binary only)", pr_number)
+        return
     structured_diff = build_diff_prompt(parsed_diff)
 
     # Fetch styleguide and patterns from repo (if present)
@@ -51,6 +54,11 @@ async def _handle_pr_review(data: dict) -> None:
 
     # Generate review via Gemini (returns structured dict)
     review = await generate_review(diff, structured_diff, styleguide, patterns)
+
+    summary = review.get("summary", "")
+    if not summary and not review.get("comments"):
+        logger.warning("[review] Empty review for PR #%d, skipping", pr_number)
+        return
 
     # Post the review with inline comments
     await _post_review(token, owner, repo_name, pr_number, pr["head"]["sha"], review, parsed_diff)
@@ -175,7 +183,7 @@ async def _post_review(
         }
     else:
         # Fallback: no valid inline comments, post summary as body
-        payload = {"body": summary, "event": "COMMENT"}
+        payload = {"commit_id": commit_sha, "body": summary, "event": "COMMENT"}
 
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=payload) as resp:
@@ -185,7 +193,7 @@ async def _post_review(
                 # If inline comments failed, retry with just the summary
                 if inline_comments:
                     logger.info("[review] Retrying without inline comments")
-                    fallback_payload = {"body": summary, "event": "COMMENT"}
+                    fallback_payload = {"commit_id": commit_sha, "body": summary, "event": "COMMENT"}
                     async with session.post(url, headers=headers, json=fallback_payload) as retry_resp:
                         if retry_resp.status not in (200, 201):
                             retry_text = await retry_resp.text()

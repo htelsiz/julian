@@ -80,41 +80,61 @@ async def generate_review(diff: str, structured_diff: str, styleguide: str | Non
         repo_patterns += f"\n## Repo Patterns\n{patterns}"
     pattern_ref = repo_patterns or DEFAULT_PATTERNS
 
-    system_prompt = f"""
-{DEFAULT_PERSONA}
+    system_prompt = f"""{DEFAULT_PERSONA}
 
 ## Pattern Reference
 {pattern_ref}
 
 ## Your Task
-Review these code changes and provide feedback as inline comments on specific lines.
-- Point out deviations from established patterns
-- Suggest how to align with the patterns
-- Praise code that follows patterns well
-- Stay in character as Julian throughout
+You are reviewing a pull request. Provide your review as a JSON object with a brief summary and detailed inline comments on specific lines of code.
 
-You MUST respond with valid JSON only, no markdown fences, no extra text.
-Use this exact format:
+Stay in character as Julian throughout every comment.
+
+## Response Format
+You MUST respond with valid JSON only. No markdown fences. No text outside the JSON.
+
 {{
-  "summary": "Brief overall assessment of the PR in character as Julian. Start with: Alright boys, let me take a look at what we've got here...",
+  "summary": "Brief 1-3 sentence overall assessment in character.",
   "comments": [
-    {{"path": "src/example.py", "line": 42, "body": "Your inline comment in character as Julian"}}
+    {{
+      "path": "src/example.py",
+      "line": 42,
+      "body": "The comment body in markdown format (see rules below)"
+    }}
   ]
 }}
 
-Rules for comments:
-- "path" must exactly match one of the file paths shown below
-- "line" must exactly match one of the line numbers (L__) shown below for that file
-- "body" should be a focused comment about that specific line/change, in character
-- Include 1-5 comments targeting the most important issues or praise-worthy patterns
-- If the code looks clean, include at least one comment praising a good pattern
+## Comment Body Format
+Each comment body MUST follow this structure:
+
+1. Start with a severity badge on its own line — one of:
+   `![critical](https://www.gstatic.com/codereviewagent/critical.svg)`
+   `![medium](https://www.gstatic.com/codereviewagent/medium-priority.svg)`
+   `![low](https://www.gstatic.com/codereviewagent/low.svg)`
+
+2. Then a blank line followed by a detailed explanation (2-5 sentences) of the issue or praise, in character as Julian.
+
+3. If you have a specific code fix, include a GitHub suggestion block:
+   ````
+   ```suggestion
+   the corrected line(s) of code
+   ```
+   ````
+   The suggestion block replaces the line you're commenting on, so write the corrected version of that line.
+
+## Comment Rules
+- "path" must EXACTLY match a file path from the changed lines below
+- "line" must EXACTLY match a line number (the number after L) from the changed lines below
+- Write as many comments as needed to cover all significant issues — do not limit yourself
+- Focus on: security issues, bugs, pattern violations, code quality, and praise for good patterns
+- Every comment must be in character as Julian
 """
 
-    user_prompt = f"""Review these changes and provide inline comments.
+    user_prompt = f"""Review this pull request and provide inline comments on specific lines.
 
 {structured_diff}
 
-Full diff for context:
+Full diff for additional context:
 ```diff
 {diff[:30000]}
 ```
@@ -163,7 +183,7 @@ async def _call_gemini(system_prompt: str, user_prompt: str) -> str:
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "generationConfig": {
             "temperature": 0.7,
-            "maxOutputTokens": 4096,
+            "maxOutputTokens": 8192,
         },
     }
 
@@ -172,14 +192,14 @@ async def _call_gemini(system_prompt: str, user_prompt: str) -> str:
             if resp.status != 200:
                 text = await resp.text()
                 logger.error("[gemini] API error: %d %s", resp.status, text)
-                return "Boys, something went sideways with the plan. Give me a minute to figure this out."
+                return ""
 
             data = await resp.json()
             try:
                 return data["candidates"][0]["content"]["parts"][0]["text"]
             except (KeyError, IndexError) as e:
                 logger.error("[gemini] Unexpected response format: %s", e)
-                return "The plan hit a snag, boys. Let me regroup."
+                return ""
 
 
 def _parse_review_response(raw: str) -> dict:
@@ -187,6 +207,9 @@ def _parse_review_response(raw: str) -> dict:
 
     Falls back to a summary-only review if JSON parsing fails.
     """
+    if not raw:
+        return {"summary": "", "comments": []}
+
     # Strip markdown code fences if Gemini wrapped the JSON
     cleaned = raw.strip()
     if cleaned.startswith("```"):
