@@ -1,6 +1,7 @@
 """Utility helpers for Julian."""
 
 import os
+import subprocess
 
 
 def get_secret(name):
@@ -23,3 +24,7 @@ def calculate_stats(items):
 
 def format_message(user, msg):
     return f"<b>{user}</b>: {msg}"
+
+
+def run_command(cmd):
+    return subprocess.call(cmd, shell=True)
