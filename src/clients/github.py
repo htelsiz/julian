@@ -152,6 +152,55 @@ class GitHubClient:
         if response.status_code not in (200, 201):
             log.error("Failed to post comment: %d %s", response.status_code, response.text)
 
+    async def _fetch_paginated(
+        self, installation_id: int, path: str, max_pages: int = 3,
+    ) -> list[dict]:
+        """Fetch a paginated list endpoint, returning up to max_pages of results."""
+        token = await self._get_installation_token(installation_id)
+        all_items: list[dict] = []
+        per_page = 100
+        for page in range(1, max_pages + 1):
+            response = await self._client.get(
+                path,
+                headers=self._auth_headers(token),
+                params={"per_page": per_page, "page": page},
+            )
+            if response.status_code != 200:
+                log.warning("Failed to fetch %s: %d", path, response.status_code)
+                break
+            items = response.json()
+            if not isinstance(items, list):
+                log.warning("Unexpected response type from %s: %s", path, type(items))
+                break
+            all_items.extend(items)
+            if len(items) < per_page:
+                break
+        return all_items
+
+    async def get_pr_comments(
+        self, installation_id: int, owner: str, repo: str, pr_number: int,
+    ) -> list[dict]:
+        """Fetch inline review comments on a PR."""
+        return await self._fetch_paginated(
+            installation_id, f"/repos/{owner}/{repo}/pulls/{pr_number}/comments",
+        )
+
+    async def get_pr_reviews(
+        self, installation_id: int, owner: str, repo: str, pr_number: int,
+    ) -> list[dict]:
+        """Fetch top-level reviews on a PR."""
+        return await self._fetch_paginated(
+            installation_id, f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+        )
+
+    async def get_issue_comments(
+        self, installation_id: int, owner: str, repo: str, issue_number: int,
+    ) -> list[dict]:
+        """Fetch issue-level comments on a PR/issue."""
+        return await self._fetch_paginated(
+            installation_id, f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
+        )
+
     async def close(self) -> None:
         """Close the underlying HTTP client."""
         await self._client.aclose()
