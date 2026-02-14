@@ -1,7 +1,9 @@
 """Gemini API client for Julian pattern enforcement reviews."""
 
+import json
 import logging
 import os
+import re
 
 import aiohttp
 from google.auth.transport.requests import Request
@@ -64,8 +66,12 @@ def _get_project_id() -> str:
         return f.read().strip()
 
 
-async def generate_review(diff: str, styleguide: str | None, patterns: str | None) -> str:
-    """Generate a Julian-style pattern enforcement review."""
+async def generate_review(diff: str, structured_diff: str, styleguide: str | None, patterns: str | None) -> dict:
+    """Generate a Julian-style pattern enforcement review with inline comments.
+
+    Returns:
+        {"summary": str, "comments": [{"path": str, "line": int, "body": str}]}
+    """
     # Always use Julian's persona — never let repo content replace it
     repo_patterns = ""
     if styleguide:
@@ -81,24 +87,41 @@ async def generate_review(diff: str, styleguide: str | None, patterns: str | Non
 {pattern_ref}
 
 ## Your Task
-Review this PR diff for pattern violations and style inconsistencies.
+Review these code changes and provide feedback as inline comments on specific lines.
 - Point out deviations from established patterns
 - Suggest how to align with the patterns
 - Praise code that follows patterns well
 - Stay in character as Julian throughout
 
-Start with: "Alright boys, let me take a look at what we've got here..."
+You MUST respond with valid JSON only, no markdown fences, no extra text.
+Use this exact format:
+{{
+  "summary": "Brief overall assessment of the PR in character as Julian. Start with: Alright boys, let me take a look at what we've got here...",
+  "comments": [
+    {{"path": "src/example.py", "line": 42, "body": "Your inline comment in character as Julian"}}
+  ]
+}}
+
+Rules for comments:
+- "path" must exactly match one of the file paths shown below
+- "line" must exactly match one of the line numbers (L__) shown below for that file
+- "body" should be a focused comment about that specific line/change, in character
+- Include 1-5 comments targeting the most important issues or praise-worthy patterns
+- If the code looks clean, include at least one comment praising a good pattern
 """
 
-    user_prompt = f"""
-Review this diff and enforce our coding patterns:
+    user_prompt = f"""Review these changes and provide inline comments.
 
+{structured_diff}
+
+Full diff for context:
 ```diff
-{diff[:30000]}  # Truncate very large diffs
+{diff[:30000]}
 ```
 """
 
-    return await _call_gemini(system_prompt, user_prompt)
+    raw = await _call_gemini(system_prompt, user_prompt)
+    return _parse_review_response(raw)
 
 
 async def generate_reply(comment: str, patterns: str | None) -> str:
@@ -157,3 +180,37 @@ async def _call_gemini(system_prompt: str, user_prompt: str) -> str:
             except (KeyError, IndexError) as e:
                 logger.error("[gemini] Unexpected response format: %s", e)
                 return "The plan hit a snag, boys. Let me regroup."
+
+
+def _parse_review_response(raw: str) -> dict:
+    """Parse Gemini's JSON response into a structured review dict.
+
+    Falls back to a summary-only review if JSON parsing fails.
+    """
+    # Strip markdown code fences if Gemini wrapped the JSON
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```\s*$", "", cleaned)
+
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict) and "summary" in parsed:
+            comments = parsed.get("comments", [])
+            # Validate comment structure
+            valid_comments = []
+            for c in comments:
+                if (
+                    isinstance(c, dict)
+                    and isinstance(c.get("path"), str)
+                    and isinstance(c.get("line"), int)
+                    and isinstance(c.get("body"), str)
+                ):
+                    valid_comments.append(c)
+                else:
+                    logger.warning("[gemini] Dropping malformed comment: %s", c)
+            return {"summary": parsed["summary"], "comments": valid_comments}
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.warning("[gemini] Failed to parse JSON review, falling back to raw text: %s", e)
+
+    return {"summary": raw, "comments": []}
