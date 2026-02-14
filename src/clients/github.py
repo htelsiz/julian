@@ -152,6 +152,51 @@ class GitHubClient:
         if response.status_code not in (200, 201):
             log.error("Failed to post comment: %d %s", response.status_code, response.text)
 
+    async def get_pr_comments(
+        self, installation_id: int, owner: str, repo: str, pr_number: int,
+    ) -> list[dict]:
+        """Fetch inline review comments on a PR."""
+        token = await self._get_installation_token(installation_id)
+        response = await self._client.get(
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/comments",
+            headers=self._auth_headers(token),
+            params={"per_page": 100},
+        )
+        if response.status_code != 200:
+            log.warning("Failed to fetch PR comments: %d", response.status_code)
+            return []
+        return response.json()
+
+    async def get_pr_reviews(
+        self, installation_id: int, owner: str, repo: str, pr_number: int,
+    ) -> list[dict]:
+        """Fetch top-level reviews on a PR."""
+        token = await self._get_installation_token(installation_id)
+        response = await self._client.get(
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+            headers=self._auth_headers(token),
+            params={"per_page": 100},
+        )
+        if response.status_code != 200:
+            log.warning("Failed to fetch PR reviews: %d", response.status_code)
+            return []
+        return response.json()
+
+    async def get_issue_comments(
+        self, installation_id: int, owner: str, repo: str, issue_number: int,
+    ) -> list[dict]:
+        """Fetch issue-level comments on a PR/issue."""
+        token = await self._get_installation_token(installation_id)
+        response = await self._client.get(
+            f"/repos/{owner}/{repo}/issues/{issue_number}/comments",
+            headers=self._auth_headers(token),
+            params={"per_page": 100},
+        )
+        if response.status_code != 200:
+            log.warning("Failed to fetch issue comments: %d", response.status_code)
+            return []
+        return response.json()
+
     async def close(self) -> None:
         """Close the underlying HTTP client."""
         await self._client.aclose()
