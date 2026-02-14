@@ -1,216 +1,129 @@
-"""Webhook event routing for Julian pattern enforcement."""
+"""Webhook event routing for Julian pattern enforcement.
+
+Loads relevant guidelines based on file extensions in the PR diff,
+then passes them to Gemini alongside the diff for review.
+"""
 
 import logging
+from pathlib import Path
 
-from .diff_parser import build_diff_prompt, parse_diff, valid_lines_for_path
-from .gemini_client import generate_review, generate_reply
-from .github_auth import get_installation_token
+from src.clients.github import GitHubClient
+from src.config import JulianSettings
+from src.gemini_client import GeminiClient
+from src.models.github import WebhookContext
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
+
+# Map file extensions to guideline files
+_EXT_TO_GUIDE: dict[str, str] = {
+    ".py": "python.md",
+    ".go": "go.md",
+    ".swift": "swift.md",
+    ".ts": "typescript.md",
+    ".tsx": "typescript.md",
+    ".js": "typescript.md",
+    ".jsx": "typescript.md",
+    ".nix": "nix.md",
+}
+
+# Always included regardless of file extensions
+_ALWAYS_INCLUDE = ("universal.md", "security.md")
+
+
+def _load_guidelines(diff: str, guidelines_dir: str) -> str:
+    """Load relevant guideline files based on file extensions in the diff.
+
+    Parses diff headers (--- a/path and +++ b/path) to extract file extensions,
+    maps them to guideline files, and concatenates the contents.
+    Always includes universal.md and security.md.
+    """
+    base = Path(guidelines_dir)
+    if not base.is_dir():
+        log.warning("Guidelines directory not found: %s", guidelines_dir)
+        return ""
+
+    # Extract unique guideline filenames from diff file extensions
+    guide_files: set[str] = set()
+    for line in diff.splitlines():
+        if line.startswith("+++ b/") or line.startswith("--- a/"):
+            path = line.split("/", 1)[-1] if "/" in line else line
+            for ext, guide in _EXT_TO_GUIDE.items():
+                if path.endswith(ext):
+                    guide_files.add(guide)
+                    break
+
+    # Always include universal + security
+    for name in _ALWAYS_INCLUDE:
+        guide_files.add(name)
+
+    # Read and concatenate
+    parts: list[str] = []
+    for name in sorted(guide_files):
+        filepath = base / name
+        if filepath.exists():
+            parts.append(filepath.read_text())
+        else:
+            log.warning("Guideline file missing: %s", filepath)
+
+    return "\n\n---\n\n".join(parts)
 
 
 async def handle_webhook(event_type: str, data: dict) -> None:
     """Route GitHub webhook events to appropriate handlers."""
-    action = data.get("action", "")
+    ctx = WebhookContext.from_webhook(event_type, data)
 
-    if event_type == "pull_request" and action in ("opened", "synchronize", "reopened"):
-        await _handle_pr_review(data)
-    elif event_type == "issue_comment" and action == "created":
-        await _handle_comment_mention(data)
+    if ctx.is_pr_review:
+        await _handle_pr_review(ctx)
+    elif ctx.is_mention:
+        await _handle_comment_mention(ctx)
     else:
-        logger.debug("[webhook] Ignoring event: %s/%s", event_type, action)
+        log.debug("Ignoring event: %s/%s", event_type, ctx.action)
 
 
-async def _handle_pr_review(data: dict) -> None:
+async def _handle_pr_review(ctx: WebhookContext) -> None:
     """Generate and post a pattern-focused code review."""
-    pr = data["pull_request"]
-    repo = data["repository"]
-    installation_id = data["installation"]["id"]
+    log.info("Processing PR #%d in %s/%s", ctx.pr_number, ctx.owner, ctx.repo_name)
 
-    owner = repo["owner"]["login"]
-    repo_name = repo["name"]
-    pr_number = pr["number"]
+    github = GitHubClient.from_env()
+    gemini = GeminiClient.from_env()
+    settings = JulianSettings()
 
-    logger.info("[review] Processing PR #%d in %s/%s", pr_number, owner, repo_name)
+    try:
+        diff = await github.fetch_diff(ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number)
+        if not diff:
+            log.warning("Empty diff for PR #%d", ctx.pr_number)
+            return
 
-    token = await get_installation_token(installation_id)
+        # Load guidelines based on file extensions in the diff
+        guidelines = _load_guidelines(diff, settings.guidelines_dir)
 
-    # Fetch the diff
-    diff = await _fetch_diff(token, owner, repo_name, pr_number)
-    if not diff:
-        logger.warning("[review] Empty diff for PR #%d", pr_number)
-        return
+        review_body = await gemini.generate_review(diff, guidelines)
 
-    # Parse diff for structured line info
-    parsed_diff = parse_diff(diff)
-    if not parsed_diff:
-        logger.info("[review] No reviewable changes in PR #%d (deletions/binary only)", pr_number)
-        return
-    structured_diff = build_diff_prompt(parsed_diff)
-
-    # Fetch styleguide and patterns from repo (if present)
-    styleguide = await _fetch_file(token, owner, repo_name, ".gemini/styleguide.md", pr["head"]["ref"])
-    patterns = await _fetch_file(token, owner, repo_name, ".gemini/patterns.md", pr["head"]["ref"])
-
-    # Generate review via Gemini (returns structured dict)
-    review = await generate_review(diff, structured_diff, styleguide, patterns)
-
-    summary = review.get("summary", "")
-    if not summary and not review.get("comments"):
-        logger.warning("[review] Empty review for PR #%d, skipping", pr_number)
-        return
-
-    # Post each inline comment individually, then the summary
-    await _post_review(token, owner, repo_name, pr_number, pr["head"]["sha"], review, parsed_diff)
-    logger.info("[review] Posted review on PR #%d", pr_number)
+        await github.post_review(ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number, review_body)
+        log.info("Posted review on PR #%d", ctx.pr_number)
+    finally:
+        await github.close()
+        await gemini.close()
 
 
-async def _handle_comment_mention(data: dict) -> None:
+async def _handle_comment_mention(ctx: WebhookContext) -> None:
     """Reply to @julian mentions in comments."""
-    comment = data["comment"]
-    body = comment.get("body", "")
+    log.info("Julian mentioned in %s/%s#%d", ctx.owner, ctx.repo_name, ctx.issue_number)
 
-    if "@julian" not in body.lower():
-        return
+    github = GitHubClient.from_env()
+    gemini = GeminiClient.from_env()
+    settings = JulianSettings()
 
-    issue = data["issue"]
-    repo = data["repository"]
-    installation_id = data["installation"]["id"]
+    try:
+        # Load universal guidelines for reply context
+        guidelines = _load_guidelines("", settings.guidelines_dir)
 
-    owner = repo["owner"]["login"]
-    repo_name = repo["name"]
-    issue_number = issue["number"]
+        reply = await gemini.generate_reply(ctx.comment_body, guidelines)
 
-    logger.info("[mention] Julian mentioned in %s/%s#%d", owner, repo_name, issue_number)
-
-    token = await get_installation_token(installation_id)
-
-    # Fetch patterns for context
-    patterns = await _fetch_file(token, owner, repo_name, ".gemini/patterns.md", "main")
-
-    # Generate reply
-    reply = await generate_reply(body, patterns)
-
-    # Post comment
-    await _post_comment(token, owner, repo_name, issue_number, reply)
-    logger.info("[mention] Posted reply on %s/%s#%d", owner, repo_name, issue_number)
-
-
-async def _fetch_diff(token: str, owner: str, repo: str, pr_number: int) -> str:
-    """Fetch PR diff from GitHub API."""
-    import aiohttp
-
-    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github.v3.diff",
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers) as resp:
-            if resp.status != 200:
-                logger.error("[github] Failed to fetch diff: %d", resp.status)
-                return ""
-            return await resp.text()
-
-
-async def _fetch_file(token: str, owner: str, repo: str, path: str, ref: str) -> str | None:
-    """Fetch file contents from repo, returns None if not found."""
-    import aiohttp
-    import base64
-
-    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={ref}"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github.v3+json",
-    }
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers) as resp:
-            if resp.status == 404:
-                return None
-            if resp.status != 200:
-                logger.warning("[github] Failed to fetch %s: %d", path, resp.status)
-                return None
-            data = await resp.json()
-            content = data.get("content", "")
-            return base64.b64decode(content).decode("utf-8")
-
-
-async def _post_review(
-    token: str,
-    owner: str,
-    repo: str,
-    pr_number: int,
-    commit_sha: str,
-    review: dict,
-    parsed_diff: list[dict],
-) -> None:
-    """Post individual inline comments on specific lines, then a summary review."""
-    import aiohttp
-
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github.v3+json",
-    }
-
-    summary = review.get("summary", "")
-    comment_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/comments"
-    posted = 0
-
-    async with aiohttp.ClientSession() as session:
-        # Post each comment individually on its specific line
-        for c in review.get("comments", []):
-            valid_lines = valid_lines_for_path(parsed_diff, c["path"])
-            if c["line"] not in valid_lines:
-                logger.warning(
-                    "[review] Dropping comment on %s:%d — line not in diff",
-                    c["path"], c["line"],
-                )
-                continue
-
-            payload = {
-                "body": c["body"],
-                "commit_id": commit_sha,
-                "path": c["path"],
-                "line": c["line"],
-                "side": "RIGHT",
-            }
-            async with session.post(comment_url, headers=headers, json=payload) as resp:
-                if resp.status in (200, 201):
-                    posted += 1
-                else:
-                    text = await resp.text()
-                    logger.warning(
-                        "[review] Failed to post comment on %s:%d: %d %s",
-                        c["path"], c["line"], resp.status, text,
-                    )
-
-        logger.info("[review] Posted %d inline comments on PR #%d", posted, pr_number)
-
-        # Post summary as a top-level review comment
-        if summary:
-            review_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
-            review_payload = {"commit_id": commit_sha, "body": summary, "event": "COMMENT"}
-            async with session.post(review_url, headers=headers, json=review_payload) as resp:
-                if resp.status not in (200, 201):
-                    text = await resp.text()
-                    logger.error("[github] Failed to post summary review: %d %s", resp.status, text)
-
-
-async def _post_comment(token: str, owner: str, repo: str, issue_number: int, body: str) -> None:
-    """Post an issue/PR comment."""
-    import aiohttp
-
-    url = f"https://api.github.com/repos/{owner}/{repo}/issues/{issue_number}/comments"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github.v3+json",
-    }
-    payload = {"body": body}
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json=payload) as resp:
-            if resp.status not in (200, 201):
-                text = await resp.text()
-                logger.error("[github] Failed to post comment: %d %s", resp.status, text)
+        await github.post_issue_comment(
+            ctx.installation_id, ctx.owner, ctx.repo_name, ctx.issue_number, reply,
+        )
+        log.info("Posted reply on %s/%s#%d", ctx.owner, ctx.repo_name, ctx.issue_number)
+    finally:
+        await github.close()
+        await gemini.close()
