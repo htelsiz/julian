@@ -169,6 +169,9 @@ class GitHubClient:
                 log.warning("Failed to fetch %s: %d", path, response.status_code)
                 break
             items = response.json()
+            if not isinstance(items, list):
+                log.warning("Unexpected response type from %s: %s", path, type(items))
+                break
             all_items.extend(items)
             if len(items) < per_page:
                 break
