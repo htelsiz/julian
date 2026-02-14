@@ -60,7 +60,7 @@ async def _handle_pr_review(data: dict) -> None:
         logger.warning("[review] Empty review for PR #%d, skipping", pr_number)
         return
 
-    # Post the review with inline comments
+    # Post each inline comment individually, then the summary
     await _post_review(token, owner, repo_name, pr_number, pr["head"]["sha"], review, parsed_diff)
     logger.info("[review] Posted review on PR #%d", pr_number)
 
@@ -146,58 +146,56 @@ async def _post_review(
     review: dict,
     parsed_diff: list[dict],
 ) -> None:
-    """Post a PR review with inline comments."""
+    """Post individual inline comments on specific lines, then a summary review."""
     import aiohttp
 
-    url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
     }
 
-    # Build inline comments, validating each against the parsed diff
-    inline_comments = []
-    for c in review.get("comments", []):
-        valid_lines = valid_lines_for_path(parsed_diff, c["path"])
-        if c["line"] in valid_lines:
-            inline_comments.append({
+    summary = review.get("summary", "")
+    comment_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/comments"
+    posted = 0
+
+    async with aiohttp.ClientSession() as session:
+        # Post each comment individually on its specific line
+        for c in review.get("comments", []):
+            valid_lines = valid_lines_for_path(parsed_diff, c["path"])
+            if c["line"] not in valid_lines:
+                logger.warning(
+                    "[review] Dropping comment on %s:%d — line not in diff",
+                    c["path"], c["line"],
+                )
+                continue
+
+            payload = {
+                "body": c["body"],
+                "commit_id": commit_sha,
                 "path": c["path"],
                 "line": c["line"],
                 "side": "RIGHT",
-                "body": c["body"],
-            })
-        else:
-            logger.warning(
-                "[review] Dropping comment on %s:%d — line not in diff",
-                c["path"], c["line"],
-            )
+            }
+            async with session.post(comment_url, headers=headers, json=payload) as resp:
+                if resp.status in (200, 201):
+                    posted += 1
+                else:
+                    text = await resp.text()
+                    logger.warning(
+                        "[review] Failed to post comment on %s:%d: %d %s",
+                        c["path"], c["line"], resp.status, text,
+                    )
 
-    summary = review.get("summary", "")
+        logger.info("[review] Posted %d inline comments on PR #%d", posted, pr_number)
 
-    if inline_comments:
-        payload = {
-            "commit_id": commit_sha,
-            "body": summary,
-            "event": "COMMENT",
-            "comments": inline_comments,
-        }
-    else:
-        # Fallback: no valid inline comments, post summary as body
-        payload = {"commit_id": commit_sha, "body": summary, "event": "COMMENT"}
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, headers=headers, json=payload) as resp:
-            if resp.status not in (200, 201):
-                text = await resp.text()
-                logger.error("[github] Failed to post review: %d %s", resp.status, text)
-                # If inline comments failed, retry with just the summary
-                if inline_comments:
-                    logger.info("[review] Retrying without inline comments")
-                    fallback_payload = {"commit_id": commit_sha, "body": summary, "event": "COMMENT"}
-                    async with session.post(url, headers=headers, json=fallback_payload) as retry_resp:
-                        if retry_resp.status not in (200, 201):
-                            retry_text = await retry_resp.text()
-                            logger.error("[github] Fallback review also failed: %d %s", retry_resp.status, retry_text)
+        # Post summary as a top-level review comment
+        if summary:
+            review_url = f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+            review_payload = {"commit_id": commit_sha, "body": summary, "event": "COMMENT"}
+            async with session.post(review_url, headers=headers, json=review_payload) as resp:
+                if resp.status not in (200, 201):
+                    text = await resp.text()
+                    logger.error("[github] Failed to post summary review: %d %s", resp.status, text)
 
 
 async def _post_comment(token: str, owner: str, repo: str, issue_number: int, body: str) -> None:
