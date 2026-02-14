@@ -14,8 +14,8 @@ from src.config import GcpSettings, GeminiSettings
 
 log = logging.getLogger(__name__)
 
-# Julian persona — used when the reviewed repo has no .gemini/styleguide.md
-DEFAULT_PERSONA = """
+# Julian's persona — always used, never overridden by reviewed repos
+JULIAN_PERSONA = """
 You ARE Julian from Trailer Park Boys. You're the calm, collected one who always has a plan and your rum and coke. You enforce coding patterns and keep operations running clean.
 
 ## How You Talk
@@ -38,17 +38,6 @@ You ARE Julian from Trailer Park Boys. You're the calm, collected one who always
 - The shit-winds = technical debt about to hit
 """
 
-DEFAULT_PATTERNS = """
-## Universal Patterns to Enforce
-- Modern type hints (Python 3.10+ style)
-- Pydantic models for data structures
-- Error handling at system boundaries
-- Comments explain WHY not WHAT
-- Tests near the code they test
-- No hardcoded secrets
-- DRY - no repeated code
-- Feature-based file organization
-"""
 
 
 class GeminiClient:
@@ -120,28 +109,16 @@ class GeminiClient:
             log.error("Unexpected response format: %s", exc)
             return "The plan hit a snag, boys. Let me regroup."
 
-    async def generate_review(
-        self,
-        diff: str,
-        guidelines: str,
-        styleguide: str | None = None,
-        patterns: str | None = None,
-    ) -> str:
+    async def generate_review(self, diff: str, guidelines: str) -> str:
         """Generate a Julian-style pattern enforcement review."""
-        persona = styleguide or DEFAULT_PERSONA
-        pattern_ref = patterns or DEFAULT_PATTERNS
-
-        system_prompt = f"""{persona}
-
-## Pattern Reference
-{pattern_ref}
+        system_prompt = f"""{JULIAN_PERSONA}
 
 ## Coding Guidelines
 {guidelines}
 
 ## Your Task
 Review this PR diff for pattern violations and style inconsistencies.
-- Point out deviations from established patterns and coding guidelines
+- Point out deviations from the coding guidelines
 - Suggest how to align with the patterns
 - Praise code that follows patterns well
 - Stay in character as Julian throughout
@@ -158,14 +135,9 @@ Start with: "Alright boys, let me take a look at what we've got here..."
 
         return await self.generate(system_prompt, user_prompt)
 
-    async def generate_reply(self, comment: str, guidelines: str, patterns: str | None = None) -> str:
+    async def generate_reply(self, comment: str, guidelines: str) -> str:
         """Generate a Julian-style reply to a mention."""
-        pattern_ref = patterns or DEFAULT_PATTERNS
-
-        system_prompt = f"""{DEFAULT_PERSONA}
-
-## Pattern Reference
-{pattern_ref}
+        system_prompt = f"""{JULIAN_PERSONA}
 
 ## Coding Guidelines
 {guidelines}

@@ -97,17 +97,7 @@ async def _handle_pr_review(ctx: WebhookContext) -> None:
         # Load guidelines based on file extensions in the diff
         guidelines = _load_guidelines(diff, settings.guidelines_dir)
 
-        # Fetch repo-specific overrides (fallback for custom per-repo patterns)
-        styleguide = await github.fetch_file_raw(
-            ctx.installation_id, ctx.owner, ctx.repo_name,
-            ".gemini/styleguide.md", ctx.pr_head_ref,
-        )
-        patterns = await github.fetch_file_raw(
-            ctx.installation_id, ctx.owner, ctx.repo_name,
-            ".gemini/patterns.md", ctx.pr_head_ref,
-        )
-
-        review_body = await gemini.generate_review(diff, guidelines, styleguide, patterns)
+        review_body = await gemini.generate_review(diff, guidelines)
 
         await github.post_review(ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number, review_body)
         log.info("Posted review on PR #%d", ctx.pr_number)
@@ -128,13 +118,7 @@ async def _handle_comment_mention(ctx: WebhookContext) -> None:
         # Load universal guidelines for reply context
         guidelines = _load_guidelines("", settings.guidelines_dir)
 
-        # Fetch repo-specific patterns
-        patterns = await github.fetch_file_raw(
-            ctx.installation_id, ctx.owner, ctx.repo_name,
-            ".gemini/patterns.md", ctx.default_branch,
-        )
-
-        reply = await gemini.generate_reply(ctx.comment_body, guidelines, patterns)
+        reply = await gemini.generate_reply(ctx.comment_body, guidelines)
 
         await github.post_issue_comment(
             ctx.installation_id, ctx.owner, ctx.repo_name, ctx.issue_number, reply,
