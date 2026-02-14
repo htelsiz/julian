@@ -77,5 +77,6 @@ class JulianSettings(BaseSettings):
     log_level: str = "INFO"
     log_buffer_size: int = 200
     guidelines_dir: str = Field(default="guidelines")
+    review_delay_seconds: int = Field(default=30)
 
     model_config = {"env_prefix": "JULIAN_"}

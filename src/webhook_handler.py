@@ -28,7 +28,7 @@ _EXT_TO_GUIDE: dict[str, str] = {
 }
 
 # Always included regardless of file extensions
-_ALWAYS_INCLUDE = ("universal.md", "security.md")
+_ALWAYS_INCLUDE = ("universal.md",)
 
 _MAX_COMMENT_LEN = 200
 _MAX_TOTAL_LEN = 4000
@@ -88,7 +88,7 @@ def _load_guidelines(diff: str, guidelines_dir: str) -> str:
 
     Parses diff headers (--- a/path and +++ b/path) to extract file extensions,
     maps them to guideline files, and concatenates the contents.
-    Always includes universal.md and security.md.
+    Always includes universal.md.
     """
     base = Path(guidelines_dir)
     if not base.is_dir():
@@ -137,9 +137,14 @@ async def _handle_pr_review(ctx: WebhookContext) -> None:
     """Generate and post a pattern-focused code review."""
     log.info("Processing PR #%d in %s/%s", ctx.pr_number, ctx.owner, ctx.repo_name)
 
+    settings = JulianSettings()
+
+    if settings.review_delay_seconds > 0:
+        log.info("Waiting %ds for other reviewers to post first", settings.review_delay_seconds)
+        await asyncio.sleep(settings.review_delay_seconds)
+
     github = GitHubClient.from_env()
     gemini = GeminiClient.from_env()
-    settings = JulianSettings()
 
     try:
         diff = await github.fetch_diff(ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number)

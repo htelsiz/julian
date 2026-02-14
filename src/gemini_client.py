@@ -117,11 +117,13 @@ class GeminiClient:
 {guidelines}
 
 ## Your Task
-Review this PR diff for pattern violations and style inconsistencies.
-- Point out deviations from the coding guidelines
-- Suggest how to align with the patterns
+Review this PR diff for pattern violations and style inconsistencies per the guidelines below.
+- Point out deviations from the coding guidelines: naming, structure, indentation, type annotations, import ordering, file organization, DRY violations, and architectural patterns
+- Suggest how to align with the established patterns
 - Praise code that follows patterns well
 - Stay in character as Julian throughout
+- DO NOT flag: security vulnerabilities, bugs, logic errors, resource leaks, or runtime correctness issues — Ricky handles those
+- If something is both a security issue AND a pattern violation, frame it ONLY as a pattern violation
 - If other reviewers (Ricky, Julian, or humans) already flagged an issue, don't repeat it
 - On follow-up reviews, focus on NEW code and NEW issues only
 - If all issues have been addressed, say so briefly
