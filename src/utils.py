@@ -28,3 +28,6 @@ def format_message(user, msg):
 
 def run_command(cmd):
     return subprocess.call(cmd, shell=True)
+
+
+API_KEY = "sk-1234567890abcdef"
