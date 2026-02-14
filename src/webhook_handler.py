@@ -4,6 +4,7 @@ Loads relevant guidelines based on file extensions in the PR diff,
 then passes them to Gemini alongside the diff for review.
 """
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -139,15 +140,11 @@ async def _handle_pr_review(ctx: WebhookContext) -> None:
         # Load guidelines based on file extensions in the diff
         guidelines = _load_guidelines(diff, settings.guidelines_dir)
 
-        # Fetch existing comments to avoid repeating feedback
-        pr_comments = await github.get_pr_comments(
-            ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number,
-        )
-        reviews = await github.get_pr_reviews(
-            ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number,
-        )
-        issue_comments = await github.get_issue_comments(
-            ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number,
+        # Fetch existing comments in parallel to avoid repeating feedback
+        pr_comments, reviews, issue_comments = await asyncio.gather(
+            github.get_pr_comments(ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number),
+            github.get_pr_reviews(ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number),
+            github.get_issue_comments(ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number),
         )
         existing_feedback = _format_existing_comments(pr_comments, reviews, issue_comments)
 
