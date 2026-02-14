@@ -109,7 +109,7 @@ class GeminiClient:
             log.error("Unexpected response format: %s", exc)
             return "The plan hit a snag, boys. Let me regroup."
 
-    async def generate_review(self, diff: str, guidelines: str) -> str:
+    async def generate_review(self, diff: str, guidelines: str, existing_feedback: str = "") -> str:
         """Generate a Julian-style pattern enforcement review."""
         system_prompt = f"""{JULIAN_PERSONA}
 
@@ -122,14 +122,24 @@ Review this PR diff for pattern violations and style inconsistencies.
 - Suggest how to align with the patterns
 - Praise code that follows patterns well
 - Stay in character as Julian throughout
+- If other reviewers (Ricky, Julian, or humans) already flagged an issue, don't repeat it
+- On follow-up reviews, focus on NEW code and NEW issues only
+- If all issues have been addressed, say so briefly
 
 Start with: "Alright boys, let me take a look at what we've got here..."
 """
 
+        existing_section = ""
+        if existing_feedback:
+            existing_section = f"""
+Existing comments on this PR (DO NOT repeat these points):
+{existing_feedback}
+
+"""
+
         truncated_diff = diff[: self._settings.max_diff_chars]
         user_prompt = f"""Review this diff and enforce our coding patterns:
-
-```diff
+{existing_section}```diff
 {truncated_diff}
 ```"""
 

@@ -4,6 +4,7 @@ Loads relevant guidelines based on file extensions in the PR diff,
 then passes them to Gemini alongside the diff for review.
 """
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -28,6 +29,58 @@ _EXT_TO_GUIDE: dict[str, str] = {
 
 # Always included regardless of file extensions
 _ALWAYS_INCLUDE = ("universal.md", "security.md")
+
+_MAX_COMMENT_LEN = 200
+_MAX_TOTAL_LEN = 4000
+
+
+def _user_tag(comment: dict) -> str:
+    """Extract a display tag from a comment's user login."""
+    login = comment.get("user", {}).get("login", "unknown")
+    return login.removesuffix("[bot]") if login.endswith("[bot]") else "human"
+
+
+def _format_existing_comments(
+    pr_comments: list[dict],
+    reviews: list[dict],
+    issue_comments: list[dict],
+) -> str:
+    """Format existing PR feedback into a summary for the Gemini prompt."""
+    lines: list[str] = []
+    total_len = 0
+
+    for c in pr_comments:
+        path = c.get("path", "")
+        line_num = c.get("line") or c.get("original_line") or "?"
+        body = (c.get("body") or "")[:_MAX_COMMENT_LEN]
+        entry = f"[{_user_tag(c)}] {path}:{line_num} — {body}"
+        total_len += len(entry) + 1
+        if total_len > _MAX_TOTAL_LEN:
+            lines.append("...(truncated)")
+            return "\n".join(lines)
+        lines.append(entry)
+
+    for r in reviews:
+        body = (r.get("body") or "").strip()
+        if not body:
+            continue
+        entry = f"[{_user_tag(r)} review] {body[:_MAX_COMMENT_LEN]}"
+        total_len += len(entry) + 1
+        if total_len > _MAX_TOTAL_LEN:
+            lines.append("...(truncated)")
+            return "\n".join(lines)
+        lines.append(entry)
+
+    for c in issue_comments:
+        body = (c.get("body") or "")[:_MAX_COMMENT_LEN]
+        entry = f"[{_user_tag(c)} comment] {body}"
+        total_len += len(entry) + 1
+        if total_len > _MAX_TOTAL_LEN:
+            lines.append("...(truncated)")
+            return "\n".join(lines)
+        lines.append(entry)
+
+    return "\n".join(lines)
 
 
 def _load_guidelines(diff: str, guidelines_dir: str) -> str:
@@ -97,7 +150,15 @@ async def _handle_pr_review(ctx: WebhookContext) -> None:
         # Load guidelines based on file extensions in the diff
         guidelines = _load_guidelines(diff, settings.guidelines_dir)
 
-        review_body = await gemini.generate_review(diff, guidelines)
+        # Fetch existing comments in parallel to avoid repeating feedback
+        pr_comments, reviews, issue_comments = await asyncio.gather(
+            github.get_pr_comments(ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number),
+            github.get_pr_reviews(ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number),
+            github.get_issue_comments(ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number),
+        )
+        existing_feedback = _format_existing_comments(pr_comments, reviews, issue_comments)
+
+        review_body = await gemini.generate_review(diff, guidelines, existing_feedback)
 
         await github.post_review(ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number, review_body)
         log.info("Posted review on PR #%d", ctx.pr_number)
