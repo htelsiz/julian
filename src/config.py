@@ -63,9 +63,9 @@ class GcpSettings(BaseSettings):
 class GeminiSettings(BaseSettings):
     """Gemini API settings."""
 
-    model: str = "gemini-2.5-pro-preview-05-06"
+    model: str = "gemini-3.1-pro-preview"
     temperature: float = 0.7
-    max_output_tokens: int = 4096
+    max_output_tokens: int = 16384
     max_diff_chars: int = 30_000
 
     model_config = {"env_prefix": "GEMINI_"}
