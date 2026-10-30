@@ -10,6 +10,7 @@ from pathlib import Path
 
 from src.clients.github import GitHubClient
 from src.config import JulianSettings
+from src.diff_parser import build_diff_prompt, parse_diff, valid_lines_for_path
 from src.gemini_client import GeminiClient
 from src.models.github import WebhookContext
 
@@ -147,6 +148,13 @@ async def _handle_pr_review(ctx: WebhookContext) -> None:
             log.warning("Empty diff for PR #%d", ctx.pr_number)
             return
 
+        # Parse the diff into per-file line data for inline comments
+        parsed_diff = parse_diff(diff)
+        if not parsed_diff:
+            log.info("No reviewable changes in PR #%d (deletions/binary only)", ctx.pr_number)
+            return
+        structured_diff = build_diff_prompt(parsed_diff)
+
         # Load guidelines based on file extensions in the diff
         guidelines = _load_guidelines(diff, settings.guidelines_dir)
 
@@ -158,10 +166,45 @@ async def _handle_pr_review(ctx: WebhookContext) -> None:
         )
         existing_feedback = _format_existing_comments(pr_comments, reviews, issue_comments)
 
-        review_body = await gemini.generate_review(diff, guidelines, existing_feedback)
+        review = await gemini.generate_review(
+            diff=diff,
+            structured_diff=structured_diff,
+            guidelines=guidelines,
+            pr_title=ctx.pr_title,
+            pr_body=ctx.pr_body,
+            existing_feedback=existing_feedback,
+        )
 
-        await github.post_review(ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number, review_body)
-        log.info("Posted review on PR #%d", ctx.pr_number)
+        summary = review.get("summary", "")
+        comments = review.get("comments", [])
+        if not summary and not comments:
+            log.warning("Empty review generated for PR #%d, skipping", ctx.pr_number)
+            return
+
+        # Post inline comments on specific lines (validated against the diff)
+        commit_sha = ctx.pr_head_sha
+        posted = 0
+        if commit_sha:
+            for c in comments:
+                if c["line"] not in valid_lines_for_path(parsed_diff, c["path"]):
+                    log.warning("Dropping comment on %s:%d — line not in diff", c["path"], c["line"])
+                    continue
+                try:
+                    await github.post_pr_comment(
+                        ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number,
+                        body=c["body"], commit_id=commit_sha, path=c["path"], line=c["line"],
+                    )
+                    posted += 1
+                except Exception:
+                    log.warning("Failed to post inline comment on %s:%d", c["path"], c["line"], exc_info=True)
+        elif comments:
+            log.warning("No head SHA for PR #%d — cannot post inline comments", ctx.pr_number)
+
+        # Post the short summary as the top-level review body
+        if summary:
+            await github.post_review(ctx.installation_id, ctx.owner, ctx.repo_name, ctx.pr_number, summary)
+
+        log.info("Posted %d inline comments + summary on PR #%d", posted, ctx.pr_number)
     finally:
         await github.close()
         await gemini.close()

@@ -139,6 +139,38 @@ class GitHubClient:
         if response.status_code not in (200, 201):
             log.error("Failed to post review: %d %s", response.status_code, response.text)
 
+    async def post_pr_comment(
+        self,
+        installation_id: int,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        *,
+        body: str,
+        commit_id: str,
+        path: str,
+        line: int,
+        side: str = "RIGHT",
+    ) -> None:
+        """Post an inline review comment on a specific line of the diff."""
+        token = await self._get_installation_token(installation_id)
+        response = await self._client.post(
+            f"/repos/{owner}/{repo}/pulls/{pr_number}/comments",
+            headers=self._auth_headers(token),
+            json={
+                "body": body,
+                "commit_id": commit_id,
+                "path": path,
+                "line": line,
+                "side": side,
+            },
+        )
+        if response.status_code not in (200, 201):
+            log.error(
+                "Failed to post inline comment on %s:%d: %d %s",
+                path, line, response.status_code, response.text,
+            )
+
     async def post_issue_comment(
         self, installation_id: int, owner: str, repo: str, issue_number: int, body: str,
     ) -> None:
